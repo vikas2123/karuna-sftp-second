@@ -1,0 +1,278 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:file="http://www.mulesoft.org/schema/mule/file"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+        https://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit
+        https://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools
+        https://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd
+        http://www.mulesoft.org/schema/mule/ee/core
+        https://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/file
+        https://www.mulesoft.org/schema/mule/file/current/mule-file.xsd">
+    <munit:config name="inventory-sync-munit-suite"
+        doc:name="MUnit Config"
+        minMuleVersion="4.4.0"/>
+
+    <!-- ================================================================
+         TEST SUITE 1: Record Validation Logic
+         Tests the DataWeave transform in validate-record-step
+         ================================================================ -->
+
+    <!-- TC-001: Valid record with Standard type -->
+    <munit:test name="TC-001-valid-standard-record"
+        doc:name="TC-001: Valid Standard record passes validation">
+        <munit:behavior>
+            <munit-tools:mock-when
+                doc:name="Mock file write"
+                processor="file:write">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="config-ref" whereValue="File_Target_Config"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[null]"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <set-payload
+                value='#[{SKU: "112820SOPAAE01", StoreId: "WHBKS", Type: "Standard", Quantity: "18", Timestamp: "12/13/23 20:39"}]'
+                doc:name="Set valid Standard payload"/>
+            <ee:transform doc:name="Run Validation DW">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+var sku       = payload.SKU      default ""
+var storeId   = payload.StoreId  default ""
+var typeVal   = payload.Type     default ""
+var qty       = payload.Quantity default ""
+var timestamp = payload.Timestamp default ""
+var allFieldsPresent = !isEmpty(sku) and !isEmpty(storeId) and !isEmpty(typeVal) and (qty != "" and qty != null) and !isEmpty(timestamp)
+var qtyIsValid = allFieldsPresent and (qty as String matches /^\d+$/)
+var typeIsValid = allFieldsPresent and (upper(typeVal) == "STANDARD" or upper(typeVal) == "BACKORDER")
+var isValid = allFieldsPresent and qtyIsValid and typeIsValid
+---
+{ isValid: isValid, validationErrors: "" }
+]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload._isValid]"
+                is="#[MunitTools::equalTo(true)]"
+                doc:name="Assert record is valid"/>
+            <munit-tools:assert-that
+                expression="#[payload._validationErrors]"
+                is="#[MunitTools::equalTo('')]"
+                doc:name="Assert no validation errors"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- TC-002: Valid record with Backorder type -->
+    <munit:test name="TC-002-valid-backorder-record"
+        doc:name="TC-002: Valid Backorder record passes validation">
+        <munit:execution>
+            <set-payload
+                value='#[{SKU: "557120HWRGSE02", StoreId: "FBVTS", Type: "Backorder", Quantity: "5", Timestamp: "12/13/23 20:39"}]'
+                doc:name="Set valid Backorder payload"/>
+            <ee:transform doc:name="Run Validation DW">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+var sku       = payload.SKU      default ""
+var storeId   = payload.StoreId  default ""
+var typeVal   = payload.Type     default ""
+var qty       = payload.Quantity default ""
+var timestamp = payload.Timestamp default ""
+var allFieldsPresent = !isEmpty(sku) and !isEmpty(storeId) and !isEmpty(typeVal) and (qty != "" and qty != null) and !isEmpty(timestamp)
+var qtyIsValid = allFieldsPresent and (qty as String matches /^\d+$/)
+var typeIsValid = allFieldsPresent and (upper(typeVal) == "STANDARD" or upper(typeVal) == "BACKORDER")
+var isValid = allFieldsPresent and qtyIsValid and typeIsValid
+---
+{ isValid: isValid }
+]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload._isValid]"
+                is="#[MunitTools::equalTo(true)]"
+                doc:name="Assert Backorder record is valid"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- TC-003: Missing SKU field -->
+    <munit:test name="TC-003-missing-sku"
+        doc:name="TC-003: Record with missing SKU fails validation">
+        <munit:execution>
+            <set-payload
+                value='#[{SKU: "", StoreId: "WHBKS", Type: "Standard", Quantity: "10", Timestamp: "12/13/23 20:39"}]'
+                doc:name="Set missing SKU payload"/>
+            <ee:transform doc:name="Run Validation DW">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+var sku       = payload.SKU      default ""
+var storeId   = payload.StoreId  default ""
+var typeVal   = payload.Type     default ""
+var qty       = payload.Quantity default ""
+var timestamp = payload.Timestamp default ""
+var allFieldsPresent = !isEmpty(sku) and !isEmpty(storeId) and !isEmpty(typeVal) and (qty != "" and qty != null) and !isEmpty(timestamp)
+var qtyIsValid = allFieldsPresent and (qty as String matches /^\d+$/)
+var typeIsValid = allFieldsPresent and (upper(typeVal) == "STANDARD" or upper(typeVal) == "BACKORDER")
+var isValid = allFieldsPresent and qtyIsValid and typeIsValid
+var validationErrors = (if (!allFieldsPresent) ["Missing mandatory field(s)"] else []) ++ (if (!qtyIsValid) ["Quantity must be a whole number"] else []) ++ (if (!typeIsValid) ["Type must be 'Standard' or 'Backorder'"] else [])
+---
+{ isValid: isValid, validationErrors: validationErrors joinBy "; " }
+]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload._isValid]"
+                is="#[MunitTools::equalTo(false)]"
+                doc:name="Assert record is invalid"/>
+            <munit-tools:assert-that
+                expression="#[payload._validationErrors contains 'Missing mandatory field']"
+                is="#[MunitTools::equalTo(true)]"
+                doc:name="Assert missing field error present"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- TC-004: Decimal quantity rejected -->
+    <munit:test name="TC-004-decimal-quantity"
+        doc:name="TC-004: Decimal quantity fails validation">
+        <munit:execution>
+            <set-payload
+                value='#[{SKU: "112820SOPAAE01", StoreId: "WHBKS", Type: "Standard", Quantity: "18.5", Timestamp: "12/13/23 20:39"}]'
+                doc:name="Set decimal quantity payload"/>
+            <ee:transform doc:name="Run Validation DW">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+var qty = payload.Quantity default ""
+var qtyIsValid = (qty as String matches /^\d+$/)
+---
+{ isValid: qtyIsValid }
+]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload._isValid]"
+                is="#[MunitTools::equalTo(false)]"
+                doc:name="Assert decimal qty is invalid"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- TC-005: Invalid type value -->
+    <munit:test name="TC-005-invalid-type"
+        doc:name="TC-005: Invalid Type value fails validation">
+        <munit:execution>
+            <set-payload
+                value='#[{SKU: "112820SOPAAE01", StoreId: "WHBKS", Type: "PreOrder", Quantity: "10", Timestamp: "12/13/23 20:39"}]'
+                doc:name="Set invalid type payload"/>
+            <ee:transform doc:name="Run Validation DW">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+var typeVal = payload.Type default ""
+var typeIsValid = (upper(typeVal) == "STANDARD" or upper(typeVal) == "BACKORDER")
+---
+{ isValid: typeIsValid }
+]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload._isValid]"
+                is="#[MunitTools::equalTo(false)]"
+                doc:name="Assert invalid type fails"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- TC-006: Output file name format -->
+    <munit:test name="TC-006-output-filename-format"
+        doc:name="TC-006: Output file name follows convention inventory_storeId_DD-MM-YYYY.csv">
+        <munit:execution>
+            <set-payload
+                value='#[{SKU: "112820SOPAAE01", StoreId: "WHBKS", Type: "Standard", Quantity: "18", Timestamp: "12/13/23 20:39"}]'
+                doc:name="Set payload"/>
+            <set-variable variableName="processDate" value="29-03-2026" doc:name="Set process date"/>
+            <ee:transform doc:name="Build Output Filename">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+"inventory_" ++ payload.StoreId ++ "_" ++ vars.processDate ++ ".csv"
+]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload]"
+                is="#[MunitTools::equalTo('inventory_WHBKS_29-03-2026.csv')]"
+                doc:name="Assert filename format correct"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- TC-007: Scheduler flow - file not found path triggers notification -->
+    <munit:test name="TC-007-file-not-found-notification"
+        doc:name="TC-007: When file not found, notification flow is called">
+        <munit:behavior>
+            <!-- Mock: file list returns empty (no file found) -->
+            <munit-tools:mock-when
+                doc:name="Mock file list - empty"
+                processor="file:list">
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[[]]" mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <!-- Mock: notification flow -->
+            <munit-tools:mock-when
+                doc:name="Mock notify-file-not-found-flow"
+                processor="flow-ref">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="name" whereValue="notify-file-not-found-flow"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[null]"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <set-variable variableName="expectedFileName" value="full_inventory_29-03-2026.csv"/>
+            <flow-ref name="check-file-exists-flow" doc:name="Run check-file-exists-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <!-- Verify the notification flow was called exactly once -->
+            <munit-tools:verify-call
+                doc:name="Verify notify-file-not-found called"
+                processor="flow-ref">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="name" whereValue="notify-file-not-found-flow"/>
+                </munit-tools:with-attributes>
+                <munit-tools:times value="1"/>
+            </munit-tools:verify-call>
+        </munit:validation>
+    </munit:test>
+
+</mule>

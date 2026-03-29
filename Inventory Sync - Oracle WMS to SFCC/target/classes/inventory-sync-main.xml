@@ -1,0 +1,416 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:file="http://www.mulesoft.org/schema/mule/file"
+      xmlns:sftp="http://www.mulesoft.org/schema/mule/sftp"
+      xmlns:email="http://www.mulesoft.org/schema/mule/email"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:batch="http://www.mulesoft.org/schema/mule/batch" xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd 
+http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd 
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd 
+        http://www.mulesoft.org/schema/mule/core        https://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/file        https://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+        http://www.mulesoft.org/schema/mule/sftp        https://www.mulesoft.org/schema/mule/sftp/current/mule-sftp.xsd
+        http://www.mulesoft.org/schema/mule/email       https://www.mulesoft.org/schema/mule/email/current/mule-email.xsd
+        http://www.mulesoft.org/schema/mule/ee/core     https://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/batch       https://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd
+http://www.mulesoft.org/schema/mule/sftp http://www.mulesoft.org/schema/mule/sftp/current/mule-sftp.xsd
+http://www.mulesoft.org/schema/mule/email http://www.mulesoft.org/schema/mule/email/current/mule-email.xsd">
+
+    <!-- ================================================================
+         FLOW 1: Master Scheduler
+         Triggers at 4 AM daily. Checks for the inventory file.
+         If not found -> email alert. If found -> kick off batch.
+         ================================================================ -->
+    <flow name="inventory-sync-scheduler-flow" doc:name="Inventory Sync Scheduler">
+
+        <!-- Scheduled trigger: every day at 4:00 AM -->
+       <!-- <scheduler doc:name="Daily 4AM Trigger">
+            <scheduling-strategy>
+                <cron expression="${scheduler.cron.expression}" timeZone="${scheduler.timezone}"/>
+            </scheduling-strategy>
+        </scheduler> -->
+
+        <scheduler doc:name="Scheduler" doc:id="c50e9f7b-c3c7-436b-a008-eae7ad8d6eab" >
+			<scheduling-strategy >
+				<fixed-frequency />
+			</scheduling-strategy>
+		</scheduler>
+		<logger level="INFO"
+            message='#["[INVENTORY-SYNC] Job triggered at " ++ now() as String ++ " | Date: " ++ (now() as Date {format:"dd-MM-yyyy"})]'
+            doc:name="Logger - Inventory Sync Job Triggered"/>
+
+        <!-- Store today's date for file naming -->
+        <set-variable variableName="processDate"
+            value='#[now() as Date {format:"dd-MM-yyyy"}]'
+           doc:name="Set Variable Process The Date"/>
+
+        <set-variable variableName="expectedFileName"
+            value='#["full_inventory_" ++ vars.processDate ++ ".csv"]'
+            doc:name="Set Variable Expected File Name"/>
+
+        <!-- Check if file exists in source location -->
+        <flow-ref name="check-file-exists-flow" doc:name="Flow Reference - Check if the file exists"/>
+
+    </flow>
+
+    <!-- ================================================================
+         FLOW 2: File Existence Check
+         Lists source directory; routes based on file presence.
+         ================================================================ -->
+    <flow name="check-file-exists-flow" doc:name="Check File Exists">
+
+        <try doc:name="Try File Check">
+
+            <!-- List files in source directory -->
+            <!-- <file:list
+                config-ref="File_Source_Config"
+                directoryPath="."
+                doc:name="List Source Files"/> -->
+
+            <!-- Filter to find today's inventory file -->
+            <sftp:list doc:name="List" doc:id="80ab71bc-615e-4674-a886-501bdbca2bff" config-ref="SFTP_Source_Config" directoryPath="${sftp.source.workingDir}"/>
+			<ee:transform doc:name="Find Inventory File">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+payload filter (item) -> item.attributes.fileName == vars.expectedFileName
+]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+
+            <choice doc:name="File Found?">
+                <when expression="#[!isEmpty(payload)]">
+                    <logger level="INFO"
+                        message='#["[INVENTORY-SYNC] File found: " ++ vars.expectedFileName]'
+                        doc:name="Log File Found"/>
+                    <!-- Hand off to batch processing -->
+                    <flow-ref name="inventory-batch-trigger-flow" doc:name="Start Batch"/>
+                </when>
+                <otherwise>
+                    <logger level="WARN"
+                        message='#["[INVENTORY-SYNC] File NOT found: " ++ vars.expectedFileName]'
+                        doc:name="Log File Missing"/>
+                    <!-- Send email alert to backend support -->
+                    <flow-ref name="notify-file-not-found-flow" doc:name="Notify File Missing"/>
+                </otherwise>
+            </choice>
+
+            <error-handler>
+                <on-error-continue type="ANY" doc:name="File Check Error">
+                    <logger level="ERROR"
+                        message='#["[INVENTORY-SYNC] ERROR checking file existence: " ++ error.description]'
+                        doc:name="Log File Check Error"/>
+                    <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+                </on-error-continue>
+            </error-handler>
+
+        </try>
+
+    </flow>
+
+    <!-- ================================================================
+         FLOW 3: Batch Trigger
+         Reads the CSV as a stream and feeds it into the Batch Job.
+         Streaming is CRITICAL for 1 GB files on 0.2 vCore.
+         ================================================================ -->
+    <flow name="inventory-batch-trigger-flow" doc:name="Inventory Batch Trigger">
+
+        <logger level="INFO"
+            message='#["[INVENTORY-SYNC] Starting batch processing for: " ++ vars.expectedFileName]'
+            doc:name="Log Batch Start"/>
+
+        <!-- Read file as stream - DO NOT load entire file into memory -->
+        <!-- <file:read
+            config-ref="File_Source_Config"
+            path='#[vars.expectedFileName]'
+            outputMimeType="application/csv; streaming=true; header=true"
+            doc:name="Read Inventory CSV (Streaming)"/> -->
+
+        <!-- Convert CSV stream to iterable records for batch -->
+        <sftp:read doc:name="Read" 
+           doc:id="d0af5670-1c40-4781-9a13-d936ae1fe0a2" 
+           config-ref="SFTP_Source_Config" 
+           path="#[vars.expectedFileName]"
+           outputMimeType="application/csv; streaming=true; header=true"
+           outputEncoding="UTF-8"/>
+		<ee:transform doc:name="Prepare Records for Batch">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+payload
+]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <!-- Initialize counters in variables before batch starts -->
+		<set-variable variableName="totalRecords" value="#[0]" doc:name="Init Total Counter"/>
+        <set-variable variableName="invalidRecords" value="#[[]]" doc:name="Init Invalid Records"/>
+
+        <!-- Kick off the Batch Job -->
+        <batch:job jobName="inventory-split-batch-job" doc:name="Inventory Split Batch Job"
+            maxFailedRecords="-1"
+            blockSize="500">
+
+            <!-- ======================================================
+                 BATCH STEP 1: Validate each record
+                 ====================================================== -->
+            <batch:process-records>
+<batch:step name="validate-record-step" 
+            doc:name="Validate Record">
+
+    <ee:transform doc:name="Validate Inventory Record">
+        <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+
+var sku       = payload.SKU      default ""
+var storeId   = payload.StoreId  default ""
+var typeVal   = payload.Type     default ""
+var qty       = payload.Quantity default ""
+var timestamp = payload.Timestamp default ""
+
+var allFieldsPresent = 
+    !isEmpty(sku)     and
+    !isEmpty(storeId) and
+    !isEmpty(typeVal) and
+    (qty != "" and qty != null) and
+    !isEmpty(timestamp)
+
+var qtyIsValid = 
+    allFieldsPresent and
+    (qty as String matches /^\d+$/)
+
+var typeIsValid = 
+    allFieldsPresent and
+    (upper(typeVal) == "STANDARD" or upper(typeVal) == "BACKORDER")
+
+var isValid = allFieldsPresent and qtyIsValid and typeIsValid
+
+var validationErrors = 
+    (if (!allFieldsPresent) ["Missing mandatory field(s)"] else []) ++
+    (if (!qtyIsValid)       ["Quantity must be a whole number"] else []) ++
+    (if (!typeIsValid)      ["Type must be Standard or Backorder"] else [])
+---
+{
+    SKU:               sku,
+    StoreId:           storeId,
+    Type:              typeVal,
+    Quantity:          qty,
+    Timestamp:         timestamp,
+    isValid:          isValid,
+    validationErrors: validationErrors joinBy "; "
+}
+]]></ee:set-payload>
+        </ee:message>
+    </ee:transform>
+
+    <!-- Mule 4 way: use error handler inside batch step -->
+    <error-handler>
+        <on-error-continue type="ANY" doc:name="Handle Record Error">
+            <logger 
+                level="ERROR"
+                message='#["Record validation failed: " ++ error.description]'
+                doc:name="Log Record Error"/>
+        </on-error-continue>
+    </error-handler>
+
+</batch:step>
+
+                <!-- ======================================================
+                     BATCH STEP 2: Split valid records by StoreId to files
+                     Invalid records are collected and emailed in on-complete
+                     ====================================================== -->
+<batch:step name="write-store-file-step"
+            doc:name="Write Store-Level File"
+            acceptExpression="#[payload.isValid == true]">
+
+    <ee:transform doc:name="Build Output CSV Row">
+        <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/csv header=false, quoteValues=true
+---
+[{
+    SKU:       payload.SKU,
+    StoreId:   payload.StoreId,
+    Type:      payload.Type,
+    Quantity:  payload.Quantity,
+    Timestamp: payload.Timestamp
+}]
+]]></ee:set-payload>
+        </ee:message>
+        <ee:variables>
+            <ee:set-variable variableName="outputFileName"><![CDATA[%dw 2.0
+output application/java
+---
+"inventory_" ++ payload.StoreId ++ "_" ++ vars.processDate ++ ".csv"
+]]></ee:set-variable>
+        </ee:variables>
+    </ee:transform>
+
+    <!-- <file:write
+        config-ref="File_Target_Config"
+        path='#[vars.outputFileName]'
+        mode="APPEND"
+        createParentDirectories="true"
+        doc:name="Append to Store File"/> -->
+
+    <!-- Mule 4 correct way to handle batch record errors -->
+    <sftp:write
+    config-ref="SFTP_Target_Config"
+    path="#[vars.outputFileName]"
+    mode="APPEND"
+    createParentDirectories="true"
+    doc:name="Append to Store File"/>
+					<error-handler>
+        <on-error-continue type="ANY" doc:name="Handle Write Error">
+            <logger
+                level="ERROR"
+                message='#["Failed writing record for store: " 
+                    ++ payload.StoreId 
+                    ++ " | Error: " 
+                    ++ error.description]'
+                doc:name="Log Write Error"/>
+        </on-error-continue>
+    </error-handler>
+
+</batch:step>
+
+                <!-- ======================================================
+                     BATCH STEP 3: Collect invalid records for notification
+                     Runs only for records that failed validation (_isValid=false)
+                     ====================================================== -->
+                <batch:step name="collect-invalid-step"
+                    doc:name="Collect Invalid Records"
+                    acceptExpression="#[payload.isValid == false]">
+
+                    <!-- Invalid records are accumulated in the batch aggregator
+                         and handled in on-complete. Nothing to do here except log. -->
+                    <logger level="WARN"
+                        message='#["[INVENTORY-SYNC] Invalid record - SKU: " ++ payload.SKU ++ " | Errors: " ++ payload.validationErrors]'
+                        doc:name="Log Invalid Record"/>
+
+                </batch:step>
+
+            </batch:process-records>
+
+            <!-- ======================================================
+                 BATCH ON-COMPLETE: Post-processing
+                 Write CSV headers, send invalid records email, log stats
+                 ====================================================== -->
+            <batch:on-complete>
+                <ee:transform doc:name="Build Batch Summary">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+{
+    totalProcessed: batchJobInstanceId,
+    successCount:   result.successfulRecords,
+    failedCount:    result.failedRecords,
+    processDate:    vars.processDate,
+    jobId:          correlationId
+}
+]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+
+                <logger level="INFO"
+                    message='#["[INVENTORY-SYNC] Batch COMPLETE | Success: " ++ (result.successfulRecords as String) ++ " | Failed: " ++ (result.failedRecords as String) ++ " | Total: " ++ (result.totalRecords as String)]'
+                    doc:name="Log Batch Summary"/>
+
+                <!-- If any records failed validation, send notification -->
+                <choice doc:name="Invalid Records Exist?">
+                    <when expression="#[result.failedRecords > 0]">
+                        <flow-ref name="notify-invalid-records-flow" doc:name="Notify Invalid Records"/>
+                    </when>
+                    <otherwise>
+                        <logger level="INFO" message="[INVENTORY-SYNC] All records valid. No email needed." doc:name="Log All Valid"/>
+                    </otherwise>
+                </choice>
+
+                <!-- Write CSV header row to each store file
+                     We append header as first line after batch completes
+                     (because we used APPEND mode - headers added in post-step) -->
+                <flow-ref name="finalize-store-files-flow" doc:name="Finalize Store Files"/>
+
+                <error-handler>
+                    <on-error-continue type="ANY" doc:name="On-Complete Error">
+                        <logger level="ERROR"
+                            message='#["[INVENTORY-SYNC] Error in batch on-complete: " ++ error.description]'
+                            doc:name="Log On-Complete Error"/>
+                        <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+                    </on-error-continue>
+                </error-handler>
+
+            </batch:on-complete>
+
+        </batch:job>
+
+    </flow>
+
+    <!-- ================================================================
+         FLOW 4: Finalize Store Files
+         Prepend CSV header to each output file.
+         Renames temp files to final names. Archives the source file.
+         ================================================================ -->
+    <flow name="finalize-store-files-flow" doc:name="Finalize Store Files">
+
+        <try doc:name="Try Finalize">
+
+            <!-- List all output files written by batch -->
+            <!-- <file:list
+                config-ref="File_Target_Config"
+                directoryPath="."
+                doc:name="List Output Files"/> -->
+
+            <!-- Filter to files for today's date -->
+            <sftp:list doc:name="List" doc:id="3410d625-dca7-41c8-88f9-7a31229b0242" config-ref="SFTP_Target_Config" directoryPath="${sftp.target.workingDir}"/>
+			<ee:transform doc:name="Filter Today Files">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+payload filter (f) -> f.attributes.fileName contains vars.processDate
+    and f.attributes.fileName startsWith "inventory_"
+]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+
+            <!-- Log the count of output files generated -->
+            <logger level="INFO"
+                message='#["[INVENTORY-SYNC] Generated " ++ (sizeOf(payload) as String) ++ " store inventory files for " ++ vars.processDate]'
+                doc:name="Log Output File Count"/>
+
+            <!-- Archive processed source file -->
+            <!-- <file:move
+                config-ref="File_Source_Config"
+                sourcePath='#[vars.expectedFileName]'
+                targetPath='#["archive/" ++ vars.expectedFileName]'
+                createParentDirectories="true"
+                overwrite="true"
+                doc:name="Archive Source File"/> -->
+
+            <sftp:move doc:name="Move" doc:id="5e396e5c-6388-47ee-a540-a46ed86c06da" config-ref="SFTP_Source_Config" sourcePath="#[vars.expectedFileName]" targetPath='#["/archive/" ++ vars.expectedFileName]'/>
+			<logger level="INFO"
+                message='#["[INVENTORY-SYNC] Source file archived: " ++ vars.expectedFileName]'
+                doc:name="Log Archive"/>
+
+            <error-handler>
+                <on-error-continue type="ANY" doc:name="Finalize Error">
+                    <logger level="ERROR"
+                        message='#["[INVENTORY-SYNC] Error finalizing files: " ++ error.description]'
+                        doc:name="Log Finalize Error"/>
+                    <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+                </on-error-continue>
+            </error-handler>
+
+        </try>
+
+    </flow>
+
+</mule>

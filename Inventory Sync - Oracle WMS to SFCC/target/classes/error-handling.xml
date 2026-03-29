@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+        https://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/ee/core
+        https://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <!-- ================================================================
+         GLOBAL ERROR HANDLER
+         Catches any error not handled at flow level.
+         All errors are logged + alert email sent.
+         ================================================================ -->
+    <error-handler name="global-error-handler" doc:name="Global Error Handler">
+
+        <!-- SFTP connectivity failures -->
+        <on-error-continue
+            type="SFTP:CONNECTIVITY"
+            logException="true"
+            doc:name="SFTP Connectivity Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] SFTP connectivity failure | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log SFTP Connectivity Error"/>
+            <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+        </on-error-continue>
+
+        <!-- SFTP access/permission failures -->
+        <on-error-continue
+            type="SFTP:ACCESS_DENIED"
+            logException="true"
+            doc:name="SFTP Access Denied Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] SFTP access denied | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log SFTP Access Error"/>
+            <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+        </on-error-continue>
+
+        <!-- SFTP file not found -->
+        <on-error-continue
+            type="SFTP:FILE_NOT_FOUND"
+            logException="true"
+            doc:name="SFTP File Not Found Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] SFTP file not found | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log SFTP File Not Found"/>
+            <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+        </on-error-continue>
+
+        <!-- File connector I/O failures -->
+        <on-error-continue
+            type="FILE:FILE_NOT_FOUND"
+            logException="true"
+            doc:name="File Not Found Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] File not found | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log File Not Found"/>
+            <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+        </on-error-continue>
+
+        <on-error-continue
+            type="FILE:ILLEGAL_PATH"
+            logException="true"
+            doc:name="Illegal File Path Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] Illegal file path | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log Illegal Path Error"/>
+            <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+        </on-error-continue>
+
+        <on-error-continue
+            type="FILE:ACCESS_DENIED"
+            logException="true"
+            doc:name="File Access Denied Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] File access denied | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log File Access Denied"/>
+            <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+        </on-error-continue>
+
+        <!-- Email send failures
+             NOTE: Do NOT call notify-system-error-flow here
+             as it would cause an infinite loop -->
+        <on-error-continue
+            type="EMAIL:CONNECTIVITY"
+            logException="true"
+            doc:name="Email Connectivity Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] Email connectivity failure | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log Email Connectivity Error"/>
+        </on-error-continue>
+
+        <on-error-continue
+            type="EMAIL:SEND"
+            logException="true"
+            doc:name="Email Send Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] Email send failure | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log Email Send Error"/>
+        </on-error-continue>
+
+        <!-- DataWeave / Expression failures -->
+        <on-error-continue
+            type="MULE:EXPRESSION"
+            logException="true"
+            doc:name="Expression Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] DataWeave expression error | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log Expression Error"/>
+            <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+        </on-error-continue>
+
+        <!-- Transformation failures -->
+        <on-error-continue
+            type="MULE:TRANSFORMATION"
+            logException="true"
+            doc:name="Transformation Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] Transformation error | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log Transformation Error"/>
+            <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+        </on-error-continue>
+
+        <!-- Retry exhausted (after all reconnection attempts fail) -->
+        <on-error-continue
+            type="MULE:RETRY_EXHAUSTED"
+            logException="true"
+            doc:name="Retry Exhausted Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] Retry exhausted | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log Retry Exhausted"/>
+            <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+        </on-error-continue>
+
+        <!-- Server security errors -->
+        <on-error-continue
+            type="MULE:SERVER_SECURITY"
+            logException="true"
+            doc:name="Security Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] Security error | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log Security Error"/>
+            <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+        </on-error-continue>
+
+        <!-- Catch-All — any error not matched above -->
+        <on-error-continue
+            type="ANY"
+            logException="true"
+            doc:name="Catch-All Error">
+            <logger
+                level="ERROR"
+                message='#["[GLOBAL-ERROR] Unhandled error | Type: " ++ error.errorType.namespace ++ ":" ++ error.errorType.identifier ++ " | CorrelationId: " ++ correlationId ++ " | Error: " ++ error.description]'
+                doc:name="Log Unhandled Error"/>
+            <flow-ref name="notify-system-error-flow" doc:name="Notify System Error"/>
+        </on-error-continue>
+
+    </error-handler>
+
+</mule>

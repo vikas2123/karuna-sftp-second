@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+        https://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http
+        https://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/ee/core
+        https://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+    <!-- ================================================================
+         HTTP Config for Splunk HEC
+         All events pushed via HTTP POST to Splunk Cloud
+         ================================================================ -->
+    <http:request-config name="Splunk_HEC_Config" doc:name="Splunk HEC Config">
+        <http:request-connection
+            protocol="HTTPS"
+            host="${splunk.hec.host}"
+            port="${splunk.hec.port}">
+        </http:request-connection>
+    </http:request-config>
+
+    <!-- ================================================================
+         CORE SPLUNK PUSH FLOW
+         Single reusable flow - all other flows call this
+         Payload must be a pre-built Splunk event JSON
+         ================================================================ -->
+    <flow name="push-to-splunk-flow" doc:name="Push Event to Splunk HEC">
+
+        <http:request
+            config-ref="Splunk_HEC_Configiuration"
+            method="POST"
+            path="/services/collector/event"
+            doc:name="POST to Splunk HEC">
+        </http:request>
+
+        <logger
+            level="INFO"
+            message='#["[SPLUNK] Event pushed | HTTP Status: " ++ (attributes.statusCode as String)]'
+            doc:name="Log Splunk Response"/>
+
+        <error-handler>
+            <on-error-continue type="ANY" doc:name="Splunk Push Error">
+                <logger
+                    level="ERROR"
+                    message='#["[SPLUNK] Failed to push event to Splunk HEC | Error: " ++ error.description]'
+                    doc:name="Log Splunk Push Failure"/>
+                <!-- Fallback: log to console so event is never lost -->
+            </on-error-continue>
+        </error-handler>
+
+    </flow>
+
+    <!-- ================================================================
+         NOTIFICATION 1: File Not Found
+         Triggered when inventory CSV is missing from SFTP source
+         ================================================================ -->
+    <flow name="notify-file-not-found-flow" doc:name="Notify: File Not Found">
+
+        <ee:transform doc:name="Build Splunk Event - File Not Found">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    // Splunk HEC envelope
+    "time":       now() as Number,
+    "host":       "mule-inventory-sync",
+    "source":     p('splunk.hec.source'),
+    "sourcetype": "mule:inventory_sync",
+    "index":      p('splunk.hec.index'),
+
+    // Event body - searchable fields in Splunk
+    "event": {
+        "severity":       "ERROR",
+        "alert_type":     "FILE_NOT_FOUND",
+        "environment":    p('app.env'),
+        "process_date":   vars.processDate,
+        "expected_file":  vars.expectedFileName,
+        "sftp_source":    p('sftp.source.host') ++ p('sftp.source.workingDir'),
+        "correlation_id": correlationId,
+        "timestamp":      now() as String,
+        "message":        "Inventory CSV file not found in source SFTP location",
+        "action_required": "Verify Oracle WMS batch job completed. File: " ++ vars.expectedFileName,
+
+        // Dashboard fields
+        "job_status":     "FAILED",
+        "records_total":  0,
+        "records_valid":  0,
+        "records_invalid": 0,
+        "files_generated": 0
+    }
+}
+]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <flow-ref name="push-to-splunk-flow" doc:name="Push to Splunk"/>
+
+        <logger
+            level="WARN"
+            message='#["[INVENTORY-SYNC] FILE NOT FOUND event sent to Splunk | File: " ++ vars.expectedFileName]'
+            doc:name="Log Alert Sent"/>
+
+    </flow>
+
+    <!-- ================================================================
+         NOTIFICATION 2: Invalid Records Detected
+         Triggered after batch when validation failures found
+         ================================================================ -->
+    <flow name="notify-invalid-records-flow" doc:name="Notify: Invalid Records">
+
+        <ee:transform doc:name="Build Splunk Event - Invalid Records">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    "time":       now() as Number,
+    "host":       "mule-inventory-sync",
+    "source":     p('splunk.hec.source'),
+    "sourcetype": "mule:inventory_sync",
+    "index":      p('splunk.hec.index'),
+
+    "event": {
+        "severity":        "WARN",
+        "alert_type":      "INVALID_RECORDS",
+        "environment":     p('app.env'),
+        "process_date":    vars.processDate,
+        "source_file":     vars.expectedFileName,
+        "correlation_id":  correlationId,
+        "timestamp":       now() as String,
+        "message":         "Invalid records detected and excluded from processing",
+
+        // Dashboard fields - these drive Splunk charts
+        "job_status":      "COMPLETED_WITH_WARNINGS",
+        "records_total":   result.totalRecords,
+        "records_valid":   result.successfulRecords,
+        "records_invalid": result.failedRecords,
+        "success_rate":    ((result.successfulRecords / result.totalRecords) * 100) as Number {format: "#.##"},
+
+        // Validation breakdown
+        "validation_rules": {
+            "mandatory_fields": "All fields required: SKU, StoreId, Type, Quantity, Timestamp",
+            "quantity_rule":    "Must be whole number (integer)",
+            "type_rule":        "Must be Standard or Backorder"
+        }
+    }
+}
+]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <flow-ref name="push-to-splunk-flow" doc:name="Push to Splunk"/>
+
+        <logger
+            level="WARN"
+            message='#["[INVENTORY-SYNC] INVALID RECORDS event sent to Splunk | Count: " ++ (result.failedRecords as String)]'
+            doc:name="Log Alert Sent"/>
+
+    </flow>
+
+    <!-- ================================================================
+         NOTIFICATION 3: System Error
+         Triggered on any unexpected system failure
+         ================================================================ -->
+    <flow name="notify-system-error-flow" doc:name="Notify: System Error">
+
+        <ee:transform doc:name="Build Splunk Event - System Error">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    "time":       now() as Number,
+    "host":       "mule-inventory-sync",
+    "source":     p('splunk.hec.source'),
+    "sourcetype": "mule:inventory_sync",
+    "index":      p('splunk.hec.index'),
+
+    "event": {
+        "severity":       "CRITICAL",
+        "alert_type":     "SYSTEM_ERROR",
+        "environment":    p('app.env'),
+        "process_date":   vars.processDate default (now() as Date {format:"dd-MM-yyyy"} as String),
+        "correlation_id": correlationId,
+        "timestamp":      now() as String,
+        "message":        error.description default "Unknown system error",
+
+        // Error details - searchable in Splunk
+        "error_type":      (error.errorType.namespace default "UNKNOWN") ++ ":" ++ (error.errorType.identifier default "UNKNOWN"),
+        "error_detail":    error.detailedDescription default "Not available",
+
+        // Dashboard fields
+        "job_status":     "FAILED",
+        "records_total":  0,
+        "records_valid":  0,
+        "records_invalid": 0,
+        "files_generated": 0
+    }
+}
+]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <flow-ref name="push-to-splunk-flow" doc:name="Push to Splunk"/>
+
+        <logger
+            level="ERROR"
+            message='#["[INVENTORY-SYNC] SYSTEM ERROR event sent to Splunk | Error: " ++ (error.description default "unknown")]'
+            doc:name="Log Alert Sent"/>
+
+    </flow>
+
+    <!-- ================================================================
+         NOTIFICATION 4: Job Success
+         Triggered on successful batch completion
+         Call this from batch on-complete when no failures
+         ================================================================ -->
+    <flow name="notify-job-success-flow" doc:name="Notify: Job Success">
+
+        <ee:transform doc:name="Build Splunk Event - Job Success">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    "time":       now() as Number,
+    "host":       "mule-inventory-sync",
+    "source":     p('splunk.hec.source'),
+    "sourcetype": "mule:inventory_sync",
+    "index":      p('splunk.hec.index'),
+
+    "event": {
+        "severity":        "INFO",
+        "alert_type":      "JOB_SUCCESS",
+        "environment":     p('app.env'),
+        "process_date":    vars.processDate,
+        "source_file":     vars.expectedFileName,
+        "correlation_id":  correlationId,
+        "timestamp":       now() as String,
+        "message":         "Inventory sync job completed successfully",
+
+        // Dashboard fields - drive your Splunk charts
+        "job_status":      "SUCCESS",
+        "records_total":   result.totalRecords,
+        "records_valid":   result.successfulRecords,
+        "records_invalid": result.failedRecords,
+        "files_generated": vars.storeFilesGenerated default 0,
+        "success_rate":    100,
+
+        // Performance metrics
+        "sftp_source":     p('sftp.source.host') ++ p('sftp.source.workingDir'),
+        "sftp_target":     p('sftp.target.host') ++ p('sftp.target.workingDir')
+    }
+}
+]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <flow-ref name="push-to-splunk-flow" doc:name="Push to Splunk"/>
+
+        <logger
+            level="INFO"
+            message='#["[INVENTORY-SYNC] JOB SUCCESS event sent to Splunk | Records: " ++ (result.totalRecords as String)]'
+            doc:name="Log Success Sent"/>
+
+    </flow>
+
+</mule>

@@ -1,0 +1,54 @@
+# ============================================================
+# Inventory Sync Application Properties
+# File: src/main/resources/config.yaml
+# Override per environment via: -Denv=dev|uat|prod
+# ============================================================
+
+# Application
+app:
+  env: dev
+  timezone: America/New_York
+
+# Source File Location (local filesystem - dev/demo mode)
+# Switch to sftp.source.* for production
+file:
+  source:
+    dir: /tmp/inventory-sync/input
+  target:
+    dir: /tmp/inventory-sync/output
+
+# SFTP Source (Oracle WMS drop folder) - for production
+sftp:
+  source:
+    host: sftp.oracle-wms.retailer.internal
+    port: 22
+    username: wms_sftp_user
+    password: "${sftp.source.password}"   # Injected from Secrets Manager
+    workingDir: /inventory/outbound
+
+  # SFTP Target (SFCC inbound folder)
+  target:
+    host: sftp.sfcc.retailer.internal
+    port: 22
+    username: sfcc_sftp_user
+    password: "${sftp.target.password}"   # Injected from Secrets Manager
+    workingDir: /inventory/inbound
+
+# Email / SMTP
+smtp:
+  host: smtp.retailer.com
+  port: 587
+  username: noreply@retailer.com
+  password: "${smtp.password}"            # Injected from Secrets Manager
+  from:
+    address: noreply@retailer.com
+
+# Support Team
+support:
+  team:
+    email: backend-support@retailer.com
+
+# Batch Configuration (performance tuning for 1GB file on 0.2 vCore)
+batch:
+  blockSize: 500          # Records per batch block; tune based on heap
+  maxFailedRecords: -1    # -1 = process all records regardless of failures

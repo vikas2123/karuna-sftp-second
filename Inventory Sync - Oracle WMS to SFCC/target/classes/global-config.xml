@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:sftp="http://www.mulesoft.org/schema/mule/sftp"
+      xmlns:file="http://www.mulesoft.org/schema/mule/file"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+        https://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/sftp
+        https://www.mulesoft.org/schema/mule/sftp/current/mule-sftp.xsd
+        http://www.mulesoft.org/schema/mule/file
+        https://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+        http://www.mulesoft.org/schema/mule/http
+        https://www.mulesoft.org/schema/mule/http/current/mule-http.xsd">
+
+    <!-- ================================================================
+         SFTP Configuration - Source
+         Oracle WMS drop folder (input CSV)
+         ================================================================ -->
+    <sftp:config name="SFTP_Source_Config" doc:name="SFTP Source Config">
+        <sftp:connection
+            host="${sftp.source.host}"
+            port="${sftp.source.port}"
+            username="${sftp.source.username}"
+            password="${sftp.source.password}"
+            workingDir="${sftp.source.workingDir}">
+            <reconnection>
+                <reconnect count="3" frequency="5000"/>
+            </reconnection>
+        </sftp:connection>
+    </sftp:config>
+
+    <!-- ================================================================
+         SFTP Configuration - Target
+         SFCC inbound folder (output store files)
+         ================================================================ -->
+    <sftp:config name="SFTP_Target_Config" doc:name="SFTP Target Config">
+        <sftp:connection
+            host="${sftp.target.host}"
+            port="${sftp.target.port}"
+            username="${sftp.target.username}"
+            password="${sftp.target.password}"
+            workingDir="${sftp.target.workingDir}">
+            <reconnection>
+                <reconnect count="3" frequency="5000"/>
+            </reconnection>
+        </sftp:connection>
+    </sftp:config>
+
+    <!-- ================================================================
+         File Connector - Source (local fallback for dev/demo)
+         ================================================================ -->
+    <file:config name="File_Source_Config" doc:name="File Source Config">
+        <file:connection workingDir="${file.source.dir}"/>
+    </file:config>
+
+    <!-- ================================================================
+         File Connector - Target (local fallback for dev/demo)
+         ================================================================ -->
+    <file:config name="File_Target_Config" doc:name="File Target Config">
+        <file:connection workingDir="${file.target.dir}"/>
+    </file:config>
+
+    <!-- ================================================================
+         HTTP Config - Splunk HEC (HTTP Event Collector)
+         Replaces Email connector for monitoring and alerting.
+         All job events, errors and alerts pushed to Splunk dashboard.
+         ================================================================ -->
+    <http:request-config name="Splunk_HEC_Configiuration" doc:name="Splunk HEC Config">
+        <http:request-connection
+            protocol="HTTPS"
+            host="${splunk.hec.host}"
+            port="${splunk.hec.port}">
+        </http:request-connection>
+    </http:request-config>
+	<configuration-properties doc:name="Configuration properties" doc:id="031a5ad6-76ce-49bd-86c9-54b015281fc7" file="properties\dev.yaml" />
+
+
+</mule>

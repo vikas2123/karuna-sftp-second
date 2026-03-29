@@ -1,0 +1,47 @@
+# ====================================================
+# DEV Environment Properties
+# ====================================================
+
+scheduler:
+  cron:
+    expression: "0 0 4 * * ?"
+  timezone: "America/New_York"
+  
+  
+  
+sftp:
+  source:
+    workingDir: "/pub/example"
+    host: "us-east-1.sftpcloud.io"
+    port: "22"
+    username: "0312ef234b0a4e099ce155e9b77e3fac"
+    password: "HeiJW3gUTPqLW9T3BMGYBHwrcrTyt6ET"
+    
+# SFTP Target
+  target:
+    host: "us-east-1.sftpcloud.io"
+    port: "22"
+    username: "0312ef234b0a4e099ce155e9b77e3fac"
+    password: "HeiJW3gUTPqLW9T3BMGYBHwrcrTyt6ET"
+    workingDir: "/output"
+ 
+# ============================================================
+# Splunk HEC (HTTP Event Collector) - Monitoring & Alerting
+
+# Setup: splunk.com → Free Trial → Settings → HEC → New Token
+# ============================================================
+splunk:
+  hec:
+    host: "your-instance.splunkcloud.com"   # e.g. prd-p-abc123.splunkcloud.com
+    port: "8088"
+    token: "your-hec-token-here"            # from Splunk HEC settings
+    index: "inventory_sync"                 # create this index in Splunk
+    source: "mule_inventory_sync"
+ 
+# ============================================================
+# Inventory File
+# ============================================================
+inventory:
+  file:
+    prefix: "full_inventory_"
+ 
